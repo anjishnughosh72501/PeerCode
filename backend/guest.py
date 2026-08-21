@@ -50,7 +50,7 @@ class Guest:
         )
         self._thread.start()
         if not self._ready.wait(timeout=5.0):
-            raise GuestConnectionError("Host unavailable")
+            raise GuestConnectionError("Could not reach the host. Allow PeerCode through the firewall on the host device.")
         if self._connect_error:
             raise GuestConnectionError(self._connect_error)
 

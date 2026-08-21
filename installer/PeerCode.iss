@@ -24,6 +24,7 @@ PrivilegesRequired=lowest
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "firewall"; Description: "Allow PeerCode through Windows Firewall (recommended)"; GroupDescription: "Network:"; Flags: checkedonce
 
 [Files]
 Source: "..\dist\PeerCode.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -35,6 +36,29 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  Params: string;
+begin
+  if CurStep = ssPostInstall then begin
+    if WizardIsTaskSelected('firewall') then begin
+      Params := ExpandConstant('advfirewall firewall add rule name="PeerCode" dir=in action=allow program="' + ExpandConstant('{app}\{#AppExeName}') + '" enable=yes profile=any');
+      ShellExec('runas', ExpandConstant('{sys}\netsh.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usPostUninstall then begin
+    ShellExec('runas', ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="PeerCode"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userappdata}\PeerCode"

@@ -4,6 +4,8 @@ import asyncio
 import json
 import socket
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
 
 from aiohttp import WSMsgType, web
@@ -11,7 +13,7 @@ from aiohttp import WSMsgType, web
 from discovery import Listener, get_local_ip
 from guest import Guest, GuestConnectionError
 from host import Host
-from security import validate_ip, validate_session_code
+from security import PORT_MAX, PORT_MIN, validate_ip, validate_session_code
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -152,6 +154,38 @@ class Bridge:
             }
         )
 
+    async def _locate_host(self, host_ip: str, code: str, host_port: int = 0) -> int:
+        """Resolve the host TCP port: explicit port -> discovery cache (with a
+        short wait for late announces) -> direct TCP scan of the app's port range."""
+        if host_port:
+            return host_port
+        if self._resolve_host_port(host_ip, code):
+            return self._resolve_host_port(host_ip, code)
+
+        deadline = time.time() + 6.0
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            port = self._resolve_host_port(host_ip, code)
+            if port:
+                return port
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._scan_for_host_port, host_ip)
+
+    @staticmethod
+    def _scan_for_host_port(host_ip: str) -> int:
+        """Last resort when UDP discovery is blocked: probe the app's port range."""
+        def probe(port: int) -> int | None:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                return port if s.connect_ex((host_ip, port)) == 0 else None
+
+        with ThreadPoolExecutor(max_workers=512) as pool:
+            for result in pool.map(probe, range(PORT_MIN, PORT_MAX + 1)):
+                if result:
+                    return result
+        return 0
+
     async def validate_guest(self, request: web.Request) -> web.Response:
         data = await request.json()
         host_ip = str(data.get("host_ip", "")).strip()
@@ -162,18 +196,33 @@ class Bridge:
         if not validate_session_code(code):
             return web.json_response({"status": "error", "message": "Invalid session code"}, status=400)
 
-        port = self._resolve_host_port(host_ip, code, int(data.get("host_port", 0) or 0))
+        port = await self._locate_host(host_ip, code, int(data.get("host_port", 0) or 0))
         if not port:
             return web.json_response(
-                {"status": "error", "message": "Host unavailable. Ensure you are on the same Wi-Fi."},
-                status=400,
+                {
+                    "status": "error",
+                    "message": (
+                        "PeerCode host not found on this network. Make sure the host "
+                        "still has an active session and both devices are on the same Wi-Fi."
+                    ),
+                },
+                status=404,
             )
 
         try:
             with socket.create_connection((host_ip, port), timeout=5.0):
                 pass
         except OSError:
-            return web.json_response({"status": "error", "message": "Host unavailable"}, status=400)
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Host found at {host_ip}:{port} but refused the connection. "
+                        "Allow PeerCode through the firewall on the host device."
+                    ),
+                },
+                status=400,
+            )
 
         return web.json_response({"status": "ok", "port": port})
 
@@ -189,9 +238,12 @@ class Bridge:
         if not validate_session_code(code):
             raise GuestConnectionError("Invalid session code")
 
-        host_port = self._resolve_host_port(host_ip, code, host_port)
+        host_port = await self._locate_host(host_ip, code, host_port)
         if not host_port:
-            raise GuestConnectionError("Host unavailable. Ensure you are on the same Wi-Fi.")
+            raise GuestConnectionError(
+                "PeerCode host not found on this network. Make sure the host still has "
+                "an active session and both devices are on the same Wi-Fi."
+            )
 
         if self.host or self.guest:
             await self._stop_session()

@@ -52,6 +52,15 @@ class Broadcaster:
         if self._thread:
             self._thread.join(timeout=1.0)
 
+    def _broadcast_addresses(self) -> list[str]:
+        """Global broadcast plus the subnet-directed broadcast, which many
+        Wi-Fi routers deliver more reliably than 255.255.255.255."""
+        addrs = ["255.255.255.255"]
+        parts = self.ip.split(".")
+        if len(parts) == 4 and not self.ip.startswith("127.") and self.ip != "0.0.0.0":
+            addrs.append(".".join(parts[:3]) + ".255")
+        return addrs
+
     def _run(self) -> None:
         payload = {
             "type": "announce",
@@ -68,10 +77,11 @@ class Broadcaster:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             while not self._stop.is_set():
-                try:
-                    s.sendto(data, ("255.255.255.255", DISCOVERY_PORT))
-                except OSError:
-                    pass
+                for addr in self._broadcast_addresses():
+                    try:
+                        s.sendto(data, (addr, DISCOVERY_PORT))
+                    except OSError:
+                        pass
                 self._stop.wait(ANNOUNCE_INTERVAL_SECONDS)
 
 
