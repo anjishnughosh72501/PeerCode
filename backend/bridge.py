@@ -35,6 +35,8 @@ class Bridge:
                 web.post("/dialog/folder", self.pick_folder),
                 web.post("/guest/validate", self.validate_guest),
                 web.post("/guest/connect", self.connect_guest),
+                web.post("/guest/approve", self.approve_guest),
+                web.post("/kick", self.kick_user),
                 web.post("/project/tree", self.project_tree),
                 web.post("/file/read", self.read_file),
                 web.post("/file/write", self.write_file),
@@ -137,6 +139,12 @@ class Bridge:
         self.host.on_error = lambda message: self._schedule({"type": "error", "message": message})
         self.host.on_session_closed = lambda: self._schedule(
             {"type": "session_closed", "message": "Session ended"}
+        )
+        self.host.on_join_request = lambda request_id, name: self._schedule(
+            {"type": "join_request", "request_id": request_id, "name": name}
+        )
+        self.host.on_join_resolved = lambda request_id, name, approved: self._schedule(
+            {"type": "join_resolved", "request_id": request_id, "name": name, "approved": approved}
         )
 
         self.host.start()
@@ -267,6 +275,9 @@ class Bridge:
             {"type": "session_closed", "message": message}
         )
         self.guest.on_error = lambda message: self._schedule({"type": "error", "message": message})
+        self.guest.on_waiting_approval = lambda: self._schedule(
+            {"type": "waiting_approval"}
+        )
 
         try:
             self.guest.connect(host_ip, host_port, code)
@@ -275,6 +286,28 @@ class Bridge:
             raise
 
         return web.json_response({"status": "ok", "session_key": self.guest.session_key, "port": host_port})
+
+    async def approve_guest(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        request_id = str(data.get("request_id", ""))
+        approved = bool(data.get("approve", False))
+        if not self.host:
+            return web.json_response({"status": "error", "message": "Not hosting"}, status=400)
+        if not self.host.resolve_request(request_id, approved):
+            return web.json_response({"status": "error", "message": "Unknown or expired request"}, status=404)
+        return web.json_response({"status": "ok"})
+
+    async def kick_user(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        name = str(data.get("name", "")).strip()
+        if not name:
+            return web.json_response({"status": "error", "message": "Missing user name"}, status=400)
+        if not self.host:
+            return web.json_response({"status": "error", "message": "Not hosting"}, status=400)
+        removed = self.host.kick(name)
+        if not removed:
+            return web.json_response({"status": "error", "message": f"No guest named '{name}'"}, status=404)
+        return web.json_response({"status": "ok", "removed": removed})
 
     def _resolve_host_port(self, host_ip: str, code: str, host_port: int = 0) -> int:
         if host_port:

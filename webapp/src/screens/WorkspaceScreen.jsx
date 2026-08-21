@@ -59,6 +59,8 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
   const [newFileName, setNewFileName] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [caret, setCaret] = useState({ line: 1, col: 1 });
+  const [requests, setRequests] = useState([]); // pending join requests (host)
+  const [waitingApproval, setWaitingApproval] = useState(session.role === "guest");
 
   const areaRef = useRef(null);
   const linesRef = useRef(null);
@@ -144,8 +146,28 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
             toast({ tone: "info", title: "Session ended", message: event.message });
             onExit();
             break;
+          case "join_request":
+            setRequests((r) =>
+              r.some((x) => x.request_id === event.request_id)
+                ? r
+                : [...r, { request_id: event.request_id, name: event.name }]
+            );
+            toast({ tone: "info", title: "Join request", message: `${event.name} wants to join the session.` });
+            break;
+          case "join_resolved":
+            setRequests((r) => r.filter((x) => x.request_id !== event.request_id));
+            break;
+          case "connected":
+            setWaitingApproval(false);
+            break;
+          case "waiting_approval":
+            setWaitingApproval(true);
+            break;
           case "error":
             toast({ tone: "error", title: "Error", message: event.message });
+            if (session.role === "guest" && /declined|removed/i.test(event.message || "")) {
+              onExit();
+            }
             break;
           default:
             break;
@@ -155,7 +177,7 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
     );
     refreshTree();
     return close;
-  }, [myName, onExit, refreshTree, toast]);
+  }, [myName, session, onExit, refreshTree, toast]);
 
   // ---- editor handlers --------------------------------------------------
   function handleInput(e) {
@@ -286,6 +308,29 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
     toast({ tone: "success", title: "Invite copied", message: `${session.ip} · ${session.code}` });
   }
 
+  async function decideRequest(requestId, approve) {
+    setRequests((r) => r.filter((x) => x.request_id !== requestId));
+    try {
+      await api.approveGuest(requestId, approve);
+      toast(
+        approve
+          ? { tone: "success", title: "Request approved" }
+          : { tone: "info", title: "Request denied" }
+      );
+    } catch (e) {
+      toast({ tone: "error", title: "Action failed", message: e.message });
+    }
+  }
+
+  async function removeUser(name) {
+    try {
+      await api.kickUser(name);
+      toast({ tone: "info", title: `${name} was removed` });
+    } catch (e) {
+      toast({ tone: "error", title: "Could not remove user", message: e.message });
+    }
+  }
+
   const lineNumbers = useMemo(() => {
     const count = (active?.content || "").split("\n").length;
     return Array.from({ length: Math.max(count, 1) }, (_, i) => i + 1).join("\n");
@@ -309,6 +354,14 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
 
       {/* main column */}
       <div className="flex min-w-0 flex-1 flex-col gap-4">
+        {waitingApproval && (
+          <div className="glass flex items-center gap-3 rounded-[18px] border border-accent/30 px-5 py-3">
+            <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[var(--color-accent,#E8B15A)]" />
+            <span className="text-sm">
+              Waiting for the host to approve your join request…
+            </span>
+          </div>
+        )}
         {/* editor toolbar */}
         <div className="glass flex items-center gap-4 rounded-[18px] px-5 py-3">
           <Icon name="files" size={16} className="text-accent shrink-0" />
@@ -501,6 +554,39 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
                 {section === "members" && (
                   <div>
                     <h2 className="font-display text-xl font-semibold">Members</h2>
+
+                    {session.role === "host" && requests.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-muted text-xs font-medium uppercase tracking-widest">
+                          Join requests
+                        </p>
+                        <m.ul variants={listVariants} initial="hidden" animate="show" className="mt-2 flex flex-col gap-2">
+                          {requests.map((req) => (
+                            <m.li
+                              key={req.request_id}
+                              layout
+                              variants={rowVariants}
+                              className="glass flex items-center gap-3 rounded-2xl border border-accent/30 px-4 py-3"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-sm">{req.name}</span>
+                              <button
+                                onClick={() => decideRequest(req.request_id, true)}
+                                className="rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/30"
+                              >
+                                Allow
+                              </button>
+                              <button
+                                onClick={() => decideRequest(req.request_id, false)}
+                                className="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/30"
+                              >
+                                Deny
+                              </button>
+                            </m.li>
+                          ))}
+                        </m.ul>
+                      </div>
+                    )}
+
                     <m.ul variants={listVariants} initial="hidden" animate="show" className="mt-5 flex flex-col gap-2">
                       {peers.map((p) => (
                         <m.li
@@ -520,6 +606,15 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
                             <span className="text-accent ml-auto rounded-full border border-accent/40 px-2 py-0.5 text-[10px] uppercase tracking-wider">
                               Host
                             </span>
+                          )}
+                          {session.role === "host" && !p.isHost && p.name !== myName && (
+                            <button
+                              title={`Remove ${p.name}`}
+                              onClick={() => removeUser(p.name)}
+                              className="text-muted ml-auto rounded-lg p-1.5 transition-colors hover:bg-red-500/20 hover:text-red-300"
+                            >
+                              <Icon name="trash" size={13} />
+                            </button>
                           )}
                         </m.li>
                       ))}

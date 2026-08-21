@@ -32,6 +32,7 @@ class Guest:
         self.on_peer_list: Callable[[list[dict[str, Any]]], None] | None = None
         self.on_session_closed: Callable[[str], None] | None = None
         self.on_error: Callable[[str], None] | None = None
+        self.on_waiting_approval: Callable[[], None] | None = None
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -49,7 +50,7 @@ class Guest:
             name="PeerCodeGuest",
         )
         self._thread.start()
-        if not self._ready.wait(timeout=5.0):
+        if not self._ready.wait(timeout=10.0):
             raise GuestConnectionError("Could not reach the host. Allow PeerCode through the firewall on the host device.")
         if self._connect_error:
             raise GuestConnectionError(self._connect_error)
@@ -156,18 +157,33 @@ class Guest:
                 MSG(MSG.HANDSHAKE, {"code": code, "name": self.name, "key": ""}).to_json()
             )
 
-            init_raw = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
-            init_msg = MSG.from_json(str(init_raw))
+            init_msg: MSG | None = None
+            while init_msg is None:
+                raw = await asyncio.wait_for(self.websocket.recv(), timeout=150.0)
+                msg = MSG.from_json(str(raw))
+                if msg.type == MSG.JOIN_PENDING:
+                    if self.on_waiting_approval:
+                        self.on_waiting_approval()
+                    self._ready.set()
+                    continue
+                if msg.type == MSG.ERROR:
+                    message = str(msg.payload.get("message", "Connection rejected"))
+                    if self._ready.is_set():
+                        self._emit_error(message)
+                    else:
+                        self._connect_error = message
+                        self._ready.set()
+                    return
 
-            if init_msg.type == MSG.ERROR:
-                self._connect_error = str(init_msg.payload.get("message", "Connection rejected"))
-                self._ready.set()
-                return
-
-            if init_msg.type != MSG.INIT:
-                self._connect_error = "Invalid host response"
-                self._ready.set()
-                return
+                if msg.type != MSG.INIT:
+                    message = "Invalid host response"
+                    if self._ready.is_set():
+                        self._emit_error(message)
+                    else:
+                        self._connect_error = message
+                        self._ready.set()
+                    return
+                init_msg = msg
 
             self.session_key = str(init_msg.payload.get("session_key", ""))
             self.session_id = str(init_msg.payload.get("session_id", ""))
@@ -235,6 +251,12 @@ class Guest:
 
                 elif msg.type == MSG.SESSION_CLOSED:
                     message = str(msg.payload.get("message", "Session closed"))
+                    if self.on_session_closed:
+                        self.on_session_closed(message)
+                    break
+
+                elif msg.type == MSG.KICK:
+                    message = str(msg.payload.get("message", "The host removed you from the session"))
                     if self.on_session_closed:
                         self.on_session_closed(message)
                     break

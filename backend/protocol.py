@@ -21,6 +21,8 @@ class MSG:
     TEXT_EDIT: ClassVar[str] = "text_edit"
     ACTIVE_FILE: ClassVar[str] = "active_file"
     SESSION_CLOSED: ClassVar[str] = "session_closed"
+    JOIN_PENDING: ClassVar[str] = "join_pending"
+    KICK: ClassVar[str] = "kick"
     ERROR: ClassVar[str] = "error"
 
     type: str

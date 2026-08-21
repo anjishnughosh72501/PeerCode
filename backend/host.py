@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import threading
+import uuid
 from typing import Any
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -58,6 +59,7 @@ class Host:
 
         self.clients: dict[WebSocketServerProtocol, dict[str, Any]] = {}
         self.authenticated: set[WebSocketServerProtocol] = set()
+        self.pending: dict[str, dict[str, Any]] = {}
 
         self.on_file_change = None
         self.on_peer_list = None
@@ -66,6 +68,8 @@ class Host:
         self.on_active_file = None
         self.on_error = None
         self.on_session_closed = None
+        self.on_join_request = None
+        self.on_join_resolved = None
 
         self._color_index = 0
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -96,6 +100,8 @@ class Host:
         self.broadcaster.stop()
         self.watcher.stop()
         session_registry.remove(self.session_id)
+        for request_id in list(self.pending):
+            self.resolve_request(request_id, approved=False)
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop).result(timeout=5.0)
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -305,6 +311,43 @@ class Host:
         host_peer = {"name": self.name, "color": "#7C84FA", "isHost": True}
         return [host_peer] + list(self.clients.values())
 
+    def resolve_request(self, request_id: str, approved: bool) -> bool:
+        """Approve or deny a pending join request. Safe to call from any thread."""
+        request = self.pending.get(request_id)
+        if not request:
+            return False
+        request["decision"]["approved"] = approved
+        if self._loop:
+            self._loop.call_soon_threadsafe(request["event"].set)
+        return True
+
+    def kick(self, name: str) -> int:
+        """Disconnect every guest with the given name. Returns number removed."""
+        targets = [
+            ws
+            for ws, info in list(self.clients.items())
+            if str(info.get("name")) == name and not info.get("isHost", False)
+        ]
+        if targets and self._loop and not self._closed:
+            asyncio.run_coroutine_threadsafe(self._kick_async(targets), self._loop)
+        return len(targets)
+
+    async def _kick_async(self, targets: list[WebSocketServerProtocol]) -> None:
+        msg = MSG(MSG.KICK, {"message": "The host removed you from the session"}).to_json()
+        for websocket in targets:
+            try:
+                await websocket.send(msg)
+                await websocket.close(1000, "Kicked")
+            except Exception:
+                pass
+            self.clients.pop(websocket, None)
+            self.authenticated.discard(websocket)
+        await self._broadcast_peer_list()
+
+    @staticmethod
+    def _is_open(websocket: WebSocketServerProtocol) -> bool:
+        return bool(getattr(websocket, "open", True))
+
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -354,6 +397,35 @@ class Host:
                     return
             else:
                 key = session.key
+
+            # Hold the guest until the host approves the join request.
+            request_id = uuid.uuid4().hex
+            decision: dict[str, bool] = {"approved": False}
+            event = asyncio.Event()
+            self.pending[request_id] = {
+                "websocket": websocket,
+                "name": peer_name,
+                "event": event,
+                "decision": decision,
+            }
+            await websocket.send(
+                MSG(MSG.JOIN_PENDING, {"message": "Waiting for the host to approve your request"}).to_json()
+            )
+            if self.on_join_request:
+                self.on_join_request(request_id, peer_name)
+
+            try:
+                got_decision = await asyncio.wait_for(event.wait(), timeout=120.0)
+            except asyncio.TimeoutError:
+                got_decision = False
+            self.pending.pop(request_id, None)
+
+            if not got_decision or not decision["approved"] or not self._is_open(websocket):
+                await websocket.send(MSG(MSG.ERROR, {"message": "Host declined your join request"}).to_json())
+                await websocket.close(1008, "Join denied")
+                return
+            if self.on_join_resolved:
+                self.on_join_resolved(request_id, peer_name, True)
 
             color = PEER_COLORS[self._color_index % len(PEER_COLORS)]
             self._color_index += 1
