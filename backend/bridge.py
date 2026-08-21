@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import socket
+import threading
+from typing import Any, Awaitable, Callable
+
+from aiohttp import WSMsgType, web
+
+from discovery import Listener, get_local_ip
+from guest import Guest, GuestConnectionError
+from host import Host
+from security import validate_ip, validate_session_code
+
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+
+
+class Bridge:
+    def __init__(self) -> None:
+        self.host: Host | None = None
+        self.guest: Guest | None = None
+        self.flutter_sockets: set[web.WebSocketResponse] = set()
+        self.discovered: dict[str, dict[str, Any]] = {}
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.listener = Listener(self._on_discovered, self._on_lost)
+        self.peer_cache: list[dict[str, Any]] = []
+
+        self.app = web.Application(middlewares=[self._error_middleware])
+        self.app.add_routes(
+            [
+                web.post("/host", self.host_project),
+                web.post("/dialog/folder", self.pick_folder),
+                web.post("/guest/validate", self.validate_guest),
+                web.post("/guest/connect", self.connect_guest),
+                web.post("/project/tree", self.project_tree),
+                web.post("/file/read", self.read_file),
+                web.post("/file/write", self.write_file),
+                web.post("/file/create", self.create_node),
+                web.post("/file/rename", self.rename_node),
+                web.post("/file/delete", self.delete_node),
+                web.post("/file/active", self.set_active_file),
+                web.post("/text/edit", self.text_edit),
+                web.post("/cursor", self.cursor),
+                web.post("/disconnect", self.disconnect),
+                web.get("/session", self.session_info),
+                web.get("/peers", self.peers),
+                web.get("/ws", self.ws),
+            ]
+        )
+
+    @web.middleware
+    async def _error_middleware(self, request: web.Request, handler: Handler) -> web.StreamResponse:
+        try:
+            return await handler(request)
+        except web.HTTPException:
+            raise
+        except GuestConnectionError as exc:
+            return web.json_response({"status": "error", "message": str(exc)}, status=400)
+        except Exception as exc:
+            await self.push_to_flutter({"type": "error", "message": str(exc)})
+            return web.json_response({"status": "error", "message": str(exc)}, status=500)
+
+    async def start(self) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.listener.start()
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 7432)
+        await site.start()
+        print("PeerCode backend ready on port 7432", flush=True)
+        while True:
+            await asyncio.sleep(3600)
+
+    async def pick_folder(self, request: web.Request) -> web.Response:
+        """Open a native folder picker on this machine and return the selection."""
+        self._dialog_lock = getattr(self, "_dialog_lock", threading.Lock())
+
+        def _pick() -> str:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            with self._dialog_lock:
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                try:
+                    return filedialog.askdirectory(title="Choose a folder to share", parent=root) or ""
+                finally:
+                    root.destroy()
+
+        loop = asyncio.get_running_loop()
+        try:
+            path = await loop.run_in_executor(None, _pick)
+        except Exception as exc:
+            return web.json_response({"status": "error", "message": str(exc)}, status=500)
+        return web.json_response({"status": "ok", "path": path})
+
+    async def host_project(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        name = str(data.get("name", "Host"))
+        filepath = str(data["filepath"])
+
+        if self.host or self.guest:
+            await self._stop_session()
+
+        self.host = Host(project_path=filepath, name=name)
+        self.host.on_file_change = lambda path, content, version: self._schedule(
+            {"type": "file_update", "path": path, "content": content, "version": version}
+        )
+        self.host.on_text_edit = lambda path, op, author: self._schedule(
+            {"type": "text_edit", "path": path, "op": op, "author": author}
+        )
+        self.host.on_active_file = lambda path, content, version: self._schedule(
+            {"type": "active_file", "path": path, "content": content, "version": version}
+        )
+        self.host.on_peer_list = lambda peers: self._update_peers(peers)
+        self.host.on_cursor = lambda payload: self._schedule({"type": "cursor_update", **payload})
+        self.host.on_error = lambda message: self._schedule({"type": "error", "message": message})
+        self.host.on_session_closed = lambda: self._schedule(
+            {"type": "session_closed", "message": "Session ended"}
+        )
+
+        self.host.start()
+        self.peer_cache = self.host.peer_list()
+        info = self.host.get_session_info()
+
+        return web.json_response(
+            {
+                "status": "ok",
+                "ip": info["ip"],
+                "port": info["port"],
+                "code": info["code"],
+                "session_id": info["session_id"],
+                "project_name": self.host.project_name,
+            }
+        )
+
+    async def validate_guest(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        host_ip = str(data.get("host_ip", "")).strip()
+        code = str(data.get("code", "")).strip().upper()
+
+        if not validate_ip(host_ip):
+            return web.json_response({"status": "error", "message": "Invalid IP"}, status=400)
+        if not validate_session_code(code):
+            return web.json_response({"status": "error", "message": "Invalid session code"}, status=400)
+
+        port = self._resolve_host_port(host_ip, code, int(data.get("host_port", 0) or 0))
+        if not port:
+            return web.json_response(
+                {"status": "error", "message": "Host unavailable. Ensure you are on the same Wi-Fi."},
+                status=400,
+            )
+
+        try:
+            with socket.create_connection((host_ip, port), timeout=5.0):
+                pass
+        except OSError:
+            return web.json_response({"status": "error", "message": "Host unavailable"}, status=400)
+
+        return web.json_response({"status": "ok", "port": port})
+
+    async def connect_guest(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        name = str(data.get("name", "Guest"))
+        host_ip = str(data.get("host_ip", "")).strip()
+        code = str(data.get("code", "")).strip().upper()
+        host_port = int(data.get("host_port", 0) or 0)
+
+        if not validate_ip(host_ip):
+            raise GuestConnectionError("Invalid IP")
+        if not validate_session_code(code):
+            raise GuestConnectionError("Invalid session code")
+
+        host_port = self._resolve_host_port(host_ip, code, host_port)
+        if not host_port:
+            raise GuestConnectionError("Host unavailable. Ensure you are on the same Wi-Fi.")
+
+        if self.host or self.guest:
+            await self._stop_session()
+
+        self.guest = Guest(name)
+        self.guest.on_initial = lambda proj_name: self._schedule(
+            {"type": "connected", "project_name": proj_name}
+        )
+        self.guest.on_sync = lambda path, content, version: self._schedule(
+            {"type": "file_update", "path": path, "content": content, "version": version}
+        )
+        self.guest.on_text_edit = lambda path, op, author: self._schedule(
+            {"type": "text_edit", "path": path, "op": op, "author": author}
+        )
+        self.guest.on_active_file = lambda path, content, version: self._schedule(
+            {"type": "active_file", "path": path, "content": content, "version": version}
+        )
+        self.guest.on_cursor = lambda payload: self._schedule({"type": "cursor_update", **payload})
+        self.guest.on_peer_list = lambda peers: self._update_peers(peers)
+        self.guest.on_session_closed = lambda message: self._schedule(
+            {"type": "session_closed", "message": message}
+        )
+        self.guest.on_error = lambda message: self._schedule({"type": "error", "message": message})
+
+        try:
+            self.guest.connect(host_ip, host_port, code)
+        except GuestConnectionError:
+            self.guest = None
+            raise
+
+        return web.json_response({"status": "ok", "session_key": self.guest.session_key, "port": host_port})
+
+    def _resolve_host_port(self, host_ip: str, code: str, host_port: int = 0) -> int:
+        if host_port:
+            return host_port
+        for peer in self.discovered.values():
+            if peer.get("ip") == host_ip and str(peer.get("code", "")).upper() == code:
+                return int(peer.get("port", 0))
+        for peer in self.listener.current_peers():
+            if peer.get("ip") == host_ip and str(peer.get("code", "")).upper() == code:
+                return int(peer.get("port", 0))
+        return 0
+
+    async def session_info(self, request: web.Request) -> web.Response:
+        if not self.host:
+            return web.json_response({"status": "error", "message": "Not hosting"}, status=400)
+        return web.json_response({"status": "ok", **self.host.get_session_info()})
+
+    async def project_tree(self, request: web.Request) -> web.Response:
+        if self.host:
+            tree = self.host.get_project_tree()
+        elif self.guest:
+            tree = await self.guest.get_project_tree()
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok", "tree": tree})
+
+    async def read_file(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        if self.host:
+            res = self.host.read_file(path)
+        elif self.guest:
+            res = await self.guest.read_file(path)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok", "content": res["content"], "version": res["version"]})
+
+    async def write_file(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        content = str(data["content"])
+        version = int(data["version"])
+        if self.host:
+            res = self.host.save_file(path, content, version)
+        elif self.guest:
+            res = await self.guest.save_file(path, content, version)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response(res)
+
+    async def set_active_file(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        if self.host:
+            self.host.set_active_file(path)
+        elif self.guest:
+            self.guest.send_active_file(path)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def text_edit(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        op = data.get("op")
+        if not isinstance(op, dict):
+            raise ValueError("Edit operation must be an object")
+        action = str(op.get("op", ""))
+        if action not in ("insert", "delete", "replace"):
+            raise ValueError("Unsupported edit operation")
+
+        if self.host:
+            self.host.apply_text_edit(path, op, self.host.name)
+        elif self.guest:
+            self.guest.send_text_edit(path, op)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def create_node(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        is_dir = bool(data.get("is_dir", False))
+        if self.host:
+            self.host.create_node(path, is_dir)
+        elif self.guest:
+            await self.guest.create_node(path, is_dir)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def rename_node(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        new_name = str(data["new_name"])
+        if self.host:
+            self.host.rename_node(path, new_name)
+        elif self.guest:
+            await self.guest.rename_node(path, new_name)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def delete_node(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        if self.host:
+            self.host.delete_node(path)
+        elif self.guest:
+            await self.guest.delete_node(path)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def cursor(self, request: web.Request) -> web.Response:
+        data = await request.json()
+        path = str(data["path"])
+        line = int(data["line"])
+        col = int(data["col"])
+        color = str(data.get("color", "#7C84FA"))
+        if self.host:
+            self.host.broadcast_cursor(self.host.name, path, line, col, color)
+        elif self.guest:
+            self.guest.send_cursor(path, line, col)
+        else:
+            raise RuntimeError("No active PeerCode session")
+        return web.json_response({"status": "ok"})
+
+    async def disconnect(self, request: web.Request) -> web.Response:
+        await self._stop_session()
+        return web.json_response({"status": "ok"})
+
+    async def peers(self, request: web.Request) -> web.Response:
+        return web.json_response({"connected": self.peer_cache, "discovered": list(self.discovered.values())})
+
+    async def ws(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self.flutter_sockets.add(ws)
+        await ws.send_str(json.dumps({"type": "discovered", "peers": list(self.discovered.values())}))
+
+        if self.peer_cache:
+            await ws.send_str(json.dumps({"type": "peer_list", "peers": self.peer_cache}))
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.ERROR:
+                    break
+        finally:
+            self.flutter_sockets.discard(ws)
+        return ws
+
+    async def push_to_flutter(self, event: dict[str, Any]) -> None:
+        dead: list[web.WebSocketResponse] = []
+        data = json.dumps(event)
+        for ws in list(self.flutter_sockets):
+            try:
+                await ws.send_str(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.flutter_sockets.discard(ws)
+
+    def _update_peers(self, peers: list[dict[str, Any]]) -> None:
+        self.peer_cache = peers
+        self._schedule({"type": "peer_list", "peers": peers})
+
+    async def _stop_session(self) -> None:
+        self.peer_cache = []
+        if self.host:
+            self.host.stop()
+            self.host = None
+        if self.guest:
+            self.guest.disconnect()
+            self.guest = None
+
+    def _on_discovered(self, peer: dict[str, Any]) -> None:
+        self.discovered[str(peer["ip"])] = peer
+        self._schedule({"type": "discovered", "peers": list(self.discovered.values())})
+
+    def _on_lost(self, ip: str) -> None:
+        self.discovered.pop(ip, None)
+        self._schedule({"type": "discovered", "peers": list(self.discovered.values()), "lost": ip})
+
+    def _schedule(self, event: dict[str, Any]) -> None:
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.push_to_flutter(event)))
