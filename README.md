@@ -2,139 +2,110 @@
 
 # PeerCode
 
-**A collaborative code editor that stays local.**
+### Real-time collaborative coding — entirely on your local network.
 
-PeerCode operates using a lightweight Host/Guest architecture, all contained within the same Python application. When a user creates a session, their client becomes the Host, and other clients on the local network become Guests.
+No accounts. No cloud. Just open a session and code together.
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
-![React](https://img.shields.io/badge/UI-React%20%2B%20Tailwind%20%2B%20Motion-61DAFB)
+Python 3.9+ &nbsp;·&nbsp; Windows · macOS · Linux
 
 </div>
 
 ---
 
-## ✨ What is PeerCode?
+## ⚠️ Important Note: Wi-Fi/LAN Only
 
-PeerCode turns any folder on your machine into a shared workspace. Host a session, and teammates on the
-**same Wi-Fi** join with a short code — everyone edits the same file in real time, sees each other's
-cursors, and browses the project tree together.
+**PeerCode is a strictly local tool.** It only works if all devices are connected to the **same Wi-Fi network (LAN)**. It does not use any external servers, so it cannot connect devices across the internet.
 
-```
-┌─────────────┐         same Wi-Fi          ┌─────────────┐
-│   Host 💻   │ ◄──── 6-char code ────►     │  Guests 💻💻 │
-│  session:   │      A7X9QP + port          │  live sync  │
-│  A7X9QP     │      (auto-discovered)      │             │
-└─────────────┘                             └─────────────┘
-```
+---
 
-### Highlights
+## How It Works (Architecture Overview)
 
-- 🚀 **One-click hosting** — pick a folder (native file dialog), get an invite
-- 🔐 **Secure by design** — random 256-bit session key per session, handshake validation, unauthenticated packets ignored, JSON-only protocol (no pickle/eval)
-- ⚡ **Real-time sync** — incremental insert/delete operations (not full-file dumps), cursor presence, live peer list
-- 🧭 **Auto-discovery** — guests only need your IP and code; the port is found automatically via LAN broadcast
-- 🎨 **5 cozy themes** — Ember, Daylight, Nordic, Rosewood, Forest — full glassmorphism UI with Motion-powered micro-interactions
-- 🖥️ **True desktop app** — native window via WebView2 / WKWebView / WebKitGTK, with browser fallback
+PeerCode operates using a lightweight Host/Guest architecture, all contained within the same Python application. When a user creates a session, their client becomes the **Host**, and other clients on the local network become **Guests**.
 
-## 📦 Download & Install
+### 1. Zero-Configuration LAN Discovery (`discovery.py`)
+To eliminate the need for users to type IP addresses, the Host continuously broadcasts its presence over the local network using **UDP Broadcasts** on port `21000`. 
+- The broadcast payload is a JSON packet containing the session name, a secure 6-character session code, and the dynamic TCP port the Host is listening on.
+- When a Guest attempts to join, their client listens for these UDP broadcasts and automatically extracts the Host's IP and port, matching it against the session code provided by the user.
 
-Grab the latest build for your platform from **[Releases](../../releases)**:
+### 2. WebSocket Protocol & Async Server (`host.py` & `guest.py`)
+Once discovered, the Guest connects to the Host via a custom **WebSocket protocol** built on top of `asyncio` and `websockets`.
+- **Event-Driven:** The server uses `asyncio` to handle multiple peer connections concurrently without blocking the main GUI thread.
+- **Security:** Each session is protected by a randomly generated 6-character alphanumeric code. For subsequent requests, an underlying 256-bit hexadecimal session key is used to authenticate messages to prevent hijacking (`security.py`).
 
-| Platform | File | Install |
-|---|---|---|
-| **Windows** | `PeerCode-Setup.exe` | Run it. Next → Next → Done. Desktop shortcut optional |
-| **Windows** (portable) | `PeerCode.exe` | Just run it — no install needed |
-| **macOS** | `PeerCode.dmg` | Open, drag **PeerCode.app** to Applications |
-| **Linux** | `PeerCode-linux-x64.tar.gz` | See `README.txt` inside (binary + `.desktop` entry) |
+### 3. File System Synchronization (`sync_engine.py` & `watcher.py`)
+Keeping files in sync across multiple clients is handled via a two-pronged approach:
+- **Internal Edits:** When a user types in the built-in Tkinter editor, the `SyncEngine` translates these into atomic JSON operations (e.g., `{"op": "insert", "index": 10, "text": "foo"}`). These operations are base64-encoded, sent to the Host, and broadcast to all other Guests to apply to their local state.
+- **External Edits:** If you open the project folder in VS Code or another IDE, the `FileWatcher` uses the `watchdog` library to monitor the file system for external changes. When a modification is detected, the Host reads the updated file, increments the file version, and broadcasts a `FILE_UPDATE` event to forcefully sync all peers.
 
-> **Requirements:** all runtime dependencies are bundled. Linux needs `libwebkit2gtk` for the native window (`sudo apt install libwebkit2gtk-4.1-0`) — otherwise PeerCode falls back to your browser automatically.
+### 4. Browser Client (`webapp/`)
+In addition to the desktop app, PeerCode ships a lightweight **browser-based client** built with React + Vite. Guests can join a session from any device with a web browser — no installation required — and get the same real-time editing experience through the same WebSocket protocol.
 
-## 🖥️ Using PeerCode
+---
 
-1. **Host Session** → choose a folder → you get a session code, your IP and port
-2. Hit **Copy Invite** and send `IP + Code` to teammates on the same network
-3. They hit **Join Session**, enter both, and you're editing together instantly
-4. `Ctrl+S` saves; conflicts are detected and resolved with one click
-5. **End Session** disconnects everyone cleanly
+## Tech Stack
 
-## 🎨 Themes
+| Component | Technology |
+|---|---|
+| **Desktop GUI** | Python + `Tkinter` (Zero external dependencies for GUI) |
+| **Web Client** | React + Vite (`webapp/`) |
+| **Network Protocol** | `asyncio`, `aiohttp`, `websockets` |
+| **File Syncing** | `watchdog` (Observer-based filesystem tracking) |
+| **Packaging** | `PyInstaller` (Bundles Python environment & dependencies) |
 
-Switch anytime from the editor toolbar or Settings — your choice is remembered:
+---
 
-| Ember *(default)* | Daylight | Nordic | Rosewood | Forest |
-|:-:|:-:|:-:|:-:|:-:|
-| Dark charcoal + warm amber | Cozy paper light | Deep blue slate | Dark plum rose | Deep forest green |
+## Quick Start
 
-## 🛠️ Build from Source
+### Option 1: Using the Prebuilt Executable (Windows)
 
-### Run in dev mode
+1. Download `PeerCode.exe` from the `dist/` directory (or Releases).
+2. Run it — everything is bundled, no Python installation needed.
+3. Launch PeerCode and start or join a session.
+
+### Option 2: Run from source
 
 ```bash
-# terminal 1 — backend
-cd backend
-pip install -r requirements.txt
-python main.py            # serves everything at http://127.0.0.1:7432
+# 1. Clone the repo
+git clone https://github.com/anjishnughosh72501/PeerCode.git
+cd PeerCode
 
-# terminal 2 — frontend (hot reload)
-cd webapp
-npm install
-npm run dev               # http://localhost:5183, proxies API to :7432
+# 2. Install dependencies
+pip install -r backend/requirements.txt
+
+# 3. Launch
+python app.py
 ```
 
-Or simply run the desktop shell from source:
+---
+
+## Building the Executable
+
+**Important:** PyInstaller is not a cross-compiler. To create a macOS executable, you must run these commands on a Mac. To create a Linux executable, you must run them on Linux.
+
+### Windows
 
 ```bash
-pip install aiohttp websockets watchdog pywebview
-python app.py             # native window + backend
+# 1. Build the main application
+pyinstaller --onefile --windowed --name PeerCode --icon=assets/Peercodelogo.ico --paths backend --hidden-import websockets --hidden-import aiohttp --hidden-import watchdog --hidden-import tkinter app.py
 ```
 
-### Build installers
+To create the end-user installer, build the bundled executable first, then compile the Inno Setup script:
 
-| OS | Command | Output |
-|---|---|---|
-| Windows | `scripts\build_windows.bat` | `dist\PeerCode.exe` + `dist\installer\PeerCode-Setup.exe` |
-| macOS | `bash scripts/build_macos.sh` | `dist/PeerCode.app` + `dist/PeerCode.dmg` |
-| Linux | `bash scripts/build_linux.sh` | `dist/PeerCode-linux-x64.tar.gz` |
-
-Prerequisites: Python 3.10+, Node.js 18+. Windows builds additionally need [Inno Setup 6](https://jrsoftware.org/isinfo.php).
-
-## 🏗️ Architecture
-
-```
-peercode/
-├── app.py                  # desktop shell: backend + native window (pywebview)
-├── assets/                 # app icons (.ico / .png)
-├── backend/                # Python backend (aiohttp + websockets)
-│   ├── main.py             # HTTP server, serves the built UI
-│   ├── bridge.py           # REST + WebSocket bridge between UI and sessions
-│   ├── host.py             # session host: auth, broadcast, file ops
-│   ├── guest.py            # session guest: connect, receive, request
-│   ├── security.py         # session codes, keys, registry, path safety
-│   ├── sync_engine.py      # incremental text-sync operations
-│   ├── discovery.py        # LAN auto-discovery (UDP broadcast)
-│   ├── watcher.py          # external file-change tracking
-│   └── test_collaboration.py
-├── webapp/                 # React + Tailwind v4 + Motion frontend
-│   └── src/
-│       ├── components/     # GlassCard, GlassButton, Sidebar, Toast, ...
-│       └── screens/        # Launch, Host, Join, Workspace
-├── installer/              # Inno Setup script (Windows)
-├── scripts/                # build scripts for all platforms
-└── web/                    # production build output (served by backend)
+```bash
+# 2. Build the setup installer (requires Inno Setup)
+iscc installer/PeerCode.iss
 ```
 
-**How a session works:**
+### macOS & Linux
 
-1. The host generates a random 6-char code (`A-Z`, `2-9`, no confusing chars), a random port (45000–55000) and a 256-bit key — all in memory, never persisted
-2. It broadcasts announcements on the LAN so joiners can resolve the port from just IP + code
-3. Guests complete a validated handshake; every further message is checked against the session key and an allow-list of message types
-4. Edits travel as small JSON operations (`insert` / `delete` / `replace`), applied through a lock-protected sync engine
+```bash
+pyinstaller --onefile --windowed --name PeerCode --paths backend --hidden-import websockets --hidden-import aiohttp --hidden-import watchdog --hidden-import tkinter app.py
+```
 
-## 🔒 Security notes
+---
 
-- Session keys are cryptographically random (`secrets`), compared in constant time
-- Unknown clients are rejected at the handshake; packets from unauthenticated peers are dropped
-- All file access is sandboxed to the shared folder (path-traversal protected)
-- Everything stays on your LAN — nothing ever touches the internet
+<div align="center">
 
+Built for developers who just want to code together.
+
+</div>
