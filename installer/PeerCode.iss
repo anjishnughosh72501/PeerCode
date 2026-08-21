@@ -2,7 +2,7 @@
 ; Build with: ISCC.exe PeerCode.iss  (expects dist\PeerCode.exe to exist)
 
 #define AppName "PeerCode"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppPublisher "PeerCode"
 #define AppExeName "PeerCode.exe"
 
