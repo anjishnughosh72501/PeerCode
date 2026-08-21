@@ -76,7 +76,18 @@ class Bridge:
         """Open a native folder picker on this machine and return the selection."""
         self._dialog_lock = getattr(self, "_dialog_lock", threading.Lock())
 
-        def _pick() -> str:
+        def _pick_webview() -> str:
+            import webview
+
+            windows = list(webview.windows)
+            if not windows:
+                raise RuntimeError("no webview window")
+            result = windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+            if not result:
+                return ""
+            return str(result[0])
+
+        def _pick_tkinter() -> str:
             import tkinter as tk
             from tkinter import filedialog
 
@@ -84,6 +95,8 @@ class Bridge:
                 root = tk.Tk()
                 root.withdraw()
                 root.attributes("-topmost", True)
+                root.lift()
+                root.focus_force()
                 try:
                     return filedialog.askdirectory(title="Choose a folder to share", parent=root) or ""
                 finally:
@@ -91,9 +104,12 @@ class Bridge:
 
         loop = asyncio.get_running_loop()
         try:
-            path = await loop.run_in_executor(None, _pick)
-        except Exception as exc:
-            return web.json_response({"status": "error", "message": str(exc)}, status=500)
+            path = await loop.run_in_executor(None, _pick_webview)
+        except Exception:
+            try:
+                path = await loop.run_in_executor(None, _pick_tkinter)
+            except Exception as exc:
+                return web.json_response({"status": "error", "message": str(exc)}, status=500)
         return web.json_response({"status": "ok", "path": path})
 
     async def host_project(self, request: web.Request) -> web.Response:

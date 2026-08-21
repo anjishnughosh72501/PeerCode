@@ -21,3 +21,6 @@ frontend/.metadata
 Thumbs.db
 
 node_modules/
+
+# PyInstaller build artifacts
+build/
