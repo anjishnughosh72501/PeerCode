@@ -56,11 +56,13 @@ In addition to the desktop app, PeerCode ships a lightweight **browser-based cli
 
 ## Quick Start
 
-### Option 1: Using the Prebuilt Executable (Windows)
+### Option 1: Using the Installer (Windows)
 
-1. Download `PeerCode.exe` from the `dist/` directory (or Releases).
-2. Run it — everything is bundled, no Python installation needed.
+1. Download `setup.exe` from the `dist/` directory (or Releases).
+2. Run it — PeerCode is installed to your Programs folder with Start Menu / desktop shortcuts and a full uninstaller.
 3. Launch PeerCode and start or join a session.
+
+> Prefer a portable single file? Grab `dist/PeerCode.exe` instead — no installation needed, just run it.
 
 ### Option 2: Run from source
 
@@ -85,8 +87,8 @@ python app.py
 ### Windows
 
 ```bash
-# 1. Build the main application
-pyinstaller --onefile --windowed --name PeerCode --icon=assets/Peercodelogo.ico --paths backend --hidden-import websockets --hidden-import aiohttp --hidden-import watchdog --hidden-import tkinter app.py
+# 1. Build the main application (uses PeerCode.spec — bundles web UI, backend & pywebview)
+pyinstaller PeerCode.spec --noconfirm --clean
 ```
 
 To create the end-user installer, build the bundled executable first, then compile the Inno Setup script:
@@ -95,6 +97,8 @@ To create the end-user installer, build the bundled executable first, then compi
 # 2. Build the setup installer (requires Inno Setup)
 iscc installer/PeerCode.iss
 ```
+
+The finished installer is written to `dist/installer/PeerCode-Setup.exe`.
 
 ### macOS & Linux
 
