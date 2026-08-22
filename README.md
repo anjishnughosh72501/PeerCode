@@ -56,51 +56,13 @@ In addition to the desktop app, PeerCode ships a lightweight **browser-based cli
 
 ## Installation
 
-### ✅ Recommended: one file, any OS — `install.py`
+**One file. One double-click.**
 
-A single small file that works on **Windows, macOS and Linux**. Copy just `install.py` onto any computer (USB stick, email, chat — whatever), then run:
+1. Download **`setup.exe`**
+2. Run it — PeerCode is installed with Start Menu shortcuts and a full uninstaller (tip: tick *Allow through Windows Firewall* when asked)
+3. Launch **PeerCode**, hit *Host Session*, share the code — done
 
-```bash
-# Windows
-python install.py
-
-# macOS / Linux
-python3 install.py
-```
-
-That's it. The installer automatically:
-
-1. Verifies Python 3.9+
-2. Downloads the PeerCode source from GitHub (skipped if you're already inside the repo)
-3. Creates an isolated virtual environment (`.venv`)
-4. Installs every backend dependency (`websockets`, `aiohttp`, `watchdog`)
-5. Rebuilds the web UI when Node.js is available — otherwise it uses the prebuilt bundle shipped in the repo
-6. Starts PeerCode and opens the UI
-
-> Useful flags: `--no-run` (install without launching) · `--dir NAME` (choose the download folder)
-
-**Requirements:** only [Python 3.9+](https://www.python.org/downloads/). Node.js is optional (used solely to rebuild the web UI). Internet is needed once, to download dependencies.
-
-### Already cloned the repo?
-
-Run the same installer from inside the project folder — it detects the existing source and skips the download:
-
-```bash
-python install.py
-```
-
-### Portable executable (Windows)
-
-Prefer zero setup? Grab `dist/PeerCode.exe` — a single file with everything bundled. No installation needed, just double-click.
-
-### Manual install
-
-```bash
-git clone https://github.com/anjishnughosh72501/PeerCode.git
-cd PeerCode
-pip install -r backend/requirements.txt
-python app.py
-```
+> Prefer portable? `setup.exe` also runs fine straight after download without installing anything extra — the app bundles every dependency, nothing else is needed on the machine.
 
 ---
 
@@ -114,7 +76,7 @@ python app.py
 pyinstaller PeerCode.spec --noconfirm --clean
 ```
 
-The finished portable executable is written to `dist/PeerCode.exe`.
+The finished installer payload is written to `dist/PeerCode.exe`; compile `installer/PeerCode.iss` with Inno Setup to produce the end-user **`dist/setup.exe`**.
 
 ### macOS & Linux
 
