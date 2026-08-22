@@ -34,11 +34,9 @@ Once discovered, the Guest connects to the Host via a custom **WebSocket protoco
 
 ### 3. File System Synchronization (`sync_engine.py` & `watcher.py`)
 Keeping files in sync across multiple clients is handled via a two-pronged approach:
-- **Internal Edits:** When a user types in the built-in Tkinter editor, the `SyncEngine` translates these into atomic JSON operations (e.g., `{"op": "insert", "index": 10, "text": "foo"}`). These operations are base64-encoded, sent to the Host, and broadcast to all other Guests to apply to their local state.
+- **Internal Edits:** When a user types in the editor, the `SyncEngine` translates these into atomic JSON operations (e.g., `{"op": "insert", "index": 10, "text": "foo"}`). These operations are sent to the Host and broadcast to all other Guests to apply to their local state.
 - **External Edits:** If you open the project folder in VS Code or another IDE, the `FileWatcher` uses the `watchdog` library to monitor the file system for external changes. When a modification is detected, the Host reads the updated file, increments the file version, and broadcasts a `FILE_UPDATE` event to forcefully sync all peers.
-
-### 4. Browser Client (`webapp/`)
-In addition to the desktop app, PeerCode ships a lightweight **browser-based client** built with React + Vite. Guests can join a session from any device with a web browser — no installation required — and get the same real-time editing experience through the same WebSocket protocol.
+- **Join Approval:** Guests request to join; the Host must approve from the *Members* panel before any code or files are shared.
 
 ---
 
@@ -46,11 +44,11 @@ In addition to the desktop app, PeerCode ships a lightweight **browser-based cli
 
 | Component | Technology |
 |---|---|
-| **Desktop GUI** | Python + `Tkinter` (Zero external dependencies for GUI) |
+| **App Shell** | Python + `pywebview` native window (falls back to your browser) |
 | **Web Client** | React + Vite (`webapp/`) |
 | **Network Protocol** | `asyncio`, `aiohttp`, `websockets` |
 | **File Syncing** | `watchdog` (Observer-based filesystem tracking) |
-| **Packaging** | `PyInstaller` (Bundles Python environment & dependencies) |
+| **Packaging** | `PyInstaller` + Inno Setup (Bundles Python environment & dependencies) |
 
 ---
 

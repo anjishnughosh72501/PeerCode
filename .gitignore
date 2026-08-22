@@ -4,16 +4,10 @@ __pycache__/
 .venv/
 .peercode-logs/
 
-# Flutter/Dart
-frontend/.dart_tool/
-frontend/build/
-frontend/.flutter-plugins
-frontend/.flutter-plugins-dependencies
-frontend/.metadata
-
 # IDE/editor
 .idea/
 .vscode/
+.vs/
 *.iml
 
 # OS
@@ -24,3 +18,4 @@ node_modules/
 
 # PyInstaller build artifacts
 build/
+dist/installer/

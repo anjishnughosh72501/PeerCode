@@ -9,7 +9,7 @@ from collections.abc import Callable
 class SyncEngine:
     """Text sync engine using JSON operations (insert/delete/replace).
 
-    The Flutter frontend sends edits as base64-encoded JSON operations:
+    Clients send edits as JSON operations:
       {"op": "insert", "index": N, "text": "..."}
       {"op": "delete", "index": N, "length": M}
       {"op": "replace", "index": N, "length": M, "text": "..."}
