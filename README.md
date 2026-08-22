@@ -54,27 +54,46 @@ In addition to the desktop app, PeerCode ships a lightweight **browser-based cli
 
 ---
 
-## Quick Start
+## Installation
 
-### Option 1: One-command setup (Windows · macOS · Linux)
+### ✅ Recommended: one file, any OS — `install.py`
 
-Run the setup script for your platform from the project folder — it verifies Python, creates a virtual environment, installs every dependency, builds the web UI (or falls back to the prebuilt bundle), and launches PeerCode:
+A single small file that works on **Windows, macOS and Linux**. Copy just `install.py` onto any computer (USB stick, email, chat — whatever), then run:
 
 ```bash
 # Windows
-setup.bat
+python install.py
 
 # macOS / Linux
-chmod +x setup.sh && ./setup.sh
+python3 install.py
 ```
 
-> Requirements: [Python 3.9+](https://www.python.org/downloads/) and optionally Node.js 18+ (used only to rebuild the web UI; a prebuilt bundle ships in `web/`).
+That's it. The installer automatically:
 
-### Option 2: Portable executable (Windows)
+1. Verifies Python 3.9+
+2. Downloads the PeerCode source from GitHub (skipped if you're already inside the repo)
+3. Creates an isolated virtual environment (`.venv`)
+4. Installs every backend dependency (`websockets`, `aiohttp`, `watchdog`)
+5. Rebuilds the web UI when Node.js is available — otherwise it uses the prebuilt bundle shipped in the repo
+6. Starts PeerCode and opens the UI
 
-Grab `dist/PeerCode.exe` — a single file with everything bundled. No installation needed, just run it.
+> Useful flags: `--no-run` (install without launching) · `--dir NAME` (choose the download folder)
 
-### Option 3: Manual install
+**Requirements:** only [Python 3.9+](https://www.python.org/downloads/). Node.js is optional (used solely to rebuild the web UI). Internet is needed once, to download dependencies.
+
+### Already cloned the repo?
+
+Run the same installer from inside the project folder — it detects the existing source and skips the download:
+
+```bash
+python install.py
+```
+
+### Portable executable (Windows)
+
+Prefer zero setup? Grab `dist/PeerCode.exe` — a single file with everything bundled. No installation needed, just double-click.
+
+### Manual install
 
 ```bash
 git clone https://github.com/anjishnughosh72501/PeerCode.git
