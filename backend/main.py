@@ -34,7 +34,8 @@ async def web_index(request: web.Request) -> web.FileResponse:
 
 
 async def on_startup(app: web.Application) -> None:
-    print(json.dumps({"status": "ready", "port": 7432, "app": "peercode"}), flush=True)
+    port = int(os.environ.get("PEERCODE_PORT", "7432"))
+    print(json.dumps({"status": "ready", "port": port, "app": "peercode"}), flush=True)
 
 
 async def main() -> None:

@@ -15,7 +15,8 @@ export const api = {
   hostSession: (name, filepath) => post("/host", { name, filepath }),
   pickFolder: () => post("/dialog/folder", {}),
   validateGuest: (host_ip, code) => post("/guest/validate", { host_ip, code }),
-  connectGuest: (name, host_ip, code) => post("/guest/connect", { name, host_ip, code }),
+  connectGuest: (name, host_ip, code, host_port = 0) =>
+    post("/guest/connect", { name, host_ip, code, host_port }),
   approveGuest: (request_id, approve) => post("/guest/approve", { request_id, approve }),
   kickUser: (name) => post("/kick", { name }),
   projectTree: () => post("/project/tree", {}),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import threading
 import time
@@ -70,9 +71,10 @@ class Bridge:
         self.listener.start()
         runner = web.AppRunner(self.app)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", 7432)
+        port = int(os.environ.get("PEERCODE_PORT", "7432"))
+        site = web.TCPSite(runner, "127.0.0.1", port)
         await site.start()
-        print("PeerCode backend ready on port 7432", flush=True)
+        print(f"PeerCode backend ready on port {port}", flush=True)
         while True:
             await asyncio.sleep(3600)
 
@@ -325,10 +327,16 @@ class Bridge:
             return web.json_response({"status": "error", "message": "Not hosting"}, status=400)
         return web.json_response({"status": "ok", **self.host.get_session_info()})
 
+    def _require_guest_ready(self) -> None:
+        """Fail fast when the guest session exists but host approval is pending."""
+        if self.guest and not self.guest.approved:
+            raise GuestConnectionError("Waiting for the host to approve your join request")
+
     async def project_tree(self, request: web.Request) -> web.Response:
         if self.host:
             tree = self.host.get_project_tree()
         elif self.guest:
+            self._require_guest_ready()
             tree = await self.guest.get_project_tree()
         else:
             raise RuntimeError("No active PeerCode session")
@@ -340,6 +348,7 @@ class Bridge:
         if self.host:
             res = self.host.read_file(path)
         elif self.guest:
+            self._require_guest_ready()
             res = await self.guest.read_file(path)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -353,6 +362,7 @@ class Bridge:
         if self.host:
             res = self.host.save_file(path, content, version)
         elif self.guest:
+            self._require_guest_ready()
             res = await self.guest.save_file(path, content, version)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -364,6 +374,7 @@ class Bridge:
         if self.host:
             self.host.set_active_file(path)
         elif self.guest:
+            self._require_guest_ready()
             self.guest.send_active_file(path)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -394,6 +405,7 @@ class Bridge:
         if self.host:
             self.host.create_node(path, is_dir)
         elif self.guest:
+            self._require_guest_ready()
             await self.guest.create_node(path, is_dir)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -406,6 +418,7 @@ class Bridge:
         if self.host:
             self.host.rename_node(path, new_name)
         elif self.guest:
+            self._require_guest_ready()
             await self.guest.rename_node(path, new_name)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -417,6 +430,7 @@ class Bridge:
         if self.host:
             self.host.delete_node(path)
         elif self.guest:
+            self._require_guest_ready()
             await self.guest.delete_node(path)
         else:
             raise RuntimeError("No active PeerCode session")
@@ -478,9 +492,29 @@ class Bridge:
     async def _stop_session(self) -> None:
         self.peer_cache = []
         if self.host:
+            # Detach callbacks first so the dying session cannot leak stale
+            # events (session_closed / errors) into a live or starting UI.
+            self.host.on_file_change = None
+            self.host.on_text_edit = None
+            self.host.on_active_file = None
+            self.host.on_peer_list = None
+            self.host.on_cursor = None
+            self.host.on_error = None
+            self.host.on_session_closed = None
+            self.host.on_join_request = None
+            self.host.on_join_resolved = None
             self.host.stop()
             self.host = None
         if self.guest:
+            self.guest.on_initial = None
+            self.guest.on_sync = None
+            self.guest.on_text_edit = None
+            self.guest.on_active_file = None
+            self.guest.on_cursor = None
+            self.guest.on_peer_list = None
+            self.guest.on_session_closed = None
+            self.guest.on_error = None
+            self.guest.on_waiting_approval = None
             self.guest.disconnect()
             self.guest = None
 

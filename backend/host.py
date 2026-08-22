@@ -102,11 +102,19 @@ class Host:
         session_registry.remove(self.session_id)
         for request_id in list(self.pending):
             self.resolve_request(request_id, approved=False)
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop).result(timeout=5.0)
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        # Schedule the async teardown on the host loop instead of blocking the
+        # caller (which may be the aiohttp bridge loop) with .result().
+        if self._loop and self._loop.is_running():
+            def _teardown() -> None:
+                task = self._loop.create_task(self._shutdown())
+                task.add_done_callback(lambda _: self._loop.stop())
+
+            try:
+                self._loop.call_soon_threadsafe(_teardown)
+            except RuntimeError:
+                pass
         if self._thread:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=3.0)
 
     def get_session_info(self) -> dict[str, Any]:
         return {
@@ -167,7 +175,7 @@ class Host:
         self.watcher.track_file(rel_path)
         return file_info
 
-    def set_active_file(self, rel_path: str) -> dict[str, Any]:
+    def set_active_file(self, rel_path: str, notify_ui: bool = True) -> dict[str, Any]:
         file_info = self.read_file(rel_path)
         self.active_file = rel_path
         payload = {
@@ -176,7 +184,7 @@ class Host:
             "version": file_info["version"],
         }
         self._broadcast(MSG(MSG.ACTIVE_FILE, payload))
-        if self.on_active_file:
+        if notify_ui and self.on_active_file:
             self.on_active_file(rel_path, file_info["content"], file_info["version"])
         return payload
 
@@ -351,9 +359,15 @@ class Host:
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._start_server())
-        self._ready.set()
-        self._loop.run_forever()
+        try:
+            self._loop.run_until_complete(self._start_server())
+            self._ready.set()
+            self._loop.run_forever()
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+            self._ready.set()
 
     async def _start_server(self) -> None:
         self._server = await websockets.serve(self._handler, "0.0.0.0", self.port)
@@ -509,7 +523,22 @@ class Host:
             elif msg.type == MSG.ACTIVE_FILE:
                 path = str(msg.payload.get("path", ""))
                 if path:
-                    self.set_active_file(path)
+                    # Guest-initiated switch: follow for other guests only.
+                    # Never push it back to the sender or the host's own UI,
+                    # otherwise openers get their editors swapped underneath them.
+                    file_info = self.read_file(path)
+                    self.active_file = path
+                    await self._broadcast_async(
+                        MSG(
+                            MSG.ACTIVE_FILE,
+                            {
+                                "path": path,
+                                "content": file_info["content"],
+                                "version": file_info["version"],
+                            },
+                        ),
+                        exclude=websocket,
+                    )
 
             elif msg.type == MSG.CREATE_NODE:
                 path = str(msg.payload.get("path", ""))

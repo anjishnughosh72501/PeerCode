@@ -10,7 +10,7 @@ import threading
 SESSION_CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 SESSION_CODE_LENGTH = 6
 PORT_MIN = 45000
-PORT_MAX = 55000
+PORT_MAX = 45199
 
 
 def generate_session_code(used: set[str] | None = None) -> str:

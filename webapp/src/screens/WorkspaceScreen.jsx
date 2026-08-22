@@ -97,8 +97,10 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
             contentRef.current = nextText;
             applyingRemote.current = true;
             setActive((a) => (a && a.path === event.path ? { ...a, content: nextText } : a));
-            requestAnimationFrame(() => {
+            queueMicrotask(() => {
               applyingRemote.current = false;
+            });
+            requestAnimationFrame(() => {
               if (el && caretAt !== null) {
                 const pos = Math.min(caretAt, nextText.length);
                 el.setSelectionRange(pos, pos);
@@ -108,11 +110,25 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
           }
           case "active_file":
             if (event.path) {
+              // Ignore echoes for the file we already have open with identical
+              // content (e.g. our own openFile triggering the broadcast) —
+              // otherwise typing in the first instants gets reverted.
+              const curOpen = activeRef.current;
+              if (
+                curOpen &&
+                curOpen.path === event.path &&
+                (event.content || "") === contentRef.current
+              ) {
+                if (event.version && event.version !== curOpen.version) {
+                  setActive((a) => (a ? { ...a, version: event.version } : a));
+                }
+                break;
+              }
               contentRef.current = event.content || "";
               applyingRemote.current = true;
               setActive({ path: event.path, content: event.content || "", version: event.version || 1 });
               setSaveState(`Opened ${event.path}`);
-              requestAnimationFrame(() => {
+              queueMicrotask(() => {
                 applyingRemote.current = false;
               });
               refreshTree();
@@ -120,11 +136,18 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
             break;
           case "file_update":
             if (activeRef.current && event.path === activeRef.current.path) {
+              // Same content (our own save echoing back): keep local state,
+              // only adopt the new version — don't rewind newer keystrokes.
+              if ((event.content || "") === contentRef.current) {
+                setActive((a) => ({ ...a, version: event.version }));
+                setSaveState(`Updated · v${event.version}`);
+                break;
+              }
               contentRef.current = event.content || "";
               applyingRemote.current = true;
               setActive((a) => ({ ...a, content: event.content || "", version: event.version }));
               setSaveState(`Updated · v${event.version}`);
-              requestAnimationFrame(() => {
+              queueMicrotask(() => {
                 applyingRemote.current = false;
               });
             }
@@ -159,6 +182,7 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
             break;
           case "connected":
             setWaitingApproval(false);
+            refreshTree();
             break;
           case "waiting_approval":
             setWaitingApproval(true);
@@ -187,6 +211,8 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
     if (next === prev) return;
     const op = diffLocal(prev, next);
     contentRef.current = next;
+    // keep the controlled textarea in sync with what the user typed
+    setActive((a) => (a && a.path === active.path ? { ...a, content: next } : a));
     if (op) api.textEdit(active.path, op).catch(() => {});
   }
 
@@ -209,7 +235,7 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
       applyingRemote.current = true;
       setActive({ path, content: res.content, version: res.version });
       setSaveState(`Opened ${path} · v${res.version}`);
-      requestAnimationFrame(() => {
+      queueMicrotask(() => {
         applyingRemote.current = false;
       });
     } catch (e) {
@@ -225,7 +251,7 @@ export default function WorkspaceScreen({ session, theme, onSetTheme, onExit }) 
         contentRef.current = res.content_on_server;
         applyingRemote.current = true;
         setActive((a) => ({ ...a, content: res.content_on_server, version: res.server_version }));
-        requestAnimationFrame(() => {
+        queueMicrotask(() => {
           applyingRemote.current = false;
         });
         setSaveState("Conflict — reloaded latest version");

@@ -56,25 +56,30 @@ In addition to the desktop app, PeerCode ships a lightweight **browser-based cli
 
 ## Quick Start
 
-### Option 1: Using the Installer (Windows)
+### Option 1: One-command setup (Windows · macOS · Linux)
 
-1. Download `setup.exe` from the `dist/` directory (or Releases).
-2. Run it — PeerCode is installed to your Programs folder with Start Menu / desktop shortcuts and a full uninstaller.
-3. Launch PeerCode and start or join a session.
-
-> Prefer a portable single file? Grab `dist/PeerCode.exe` instead — no installation needed, just run it.
-
-### Option 2: Run from source
+Run the setup script for your platform from the project folder — it verifies Python, creates a virtual environment, installs every dependency, builds the web UI (or falls back to the prebuilt bundle), and launches PeerCode:
 
 ```bash
-# 1. Clone the repo
+# Windows
+setup.bat
+
+# macOS / Linux
+chmod +x setup.sh && ./setup.sh
+```
+
+> Requirements: [Python 3.9+](https://www.python.org/downloads/) and optionally Node.js 18+ (used only to rebuild the web UI; a prebuilt bundle ships in `web/`).
+
+### Option 2: Portable executable (Windows)
+
+Grab `dist/PeerCode.exe` — a single file with everything bundled. No installation needed, just run it.
+
+### Option 3: Manual install
+
+```bash
 git clone https://github.com/anjishnughosh72501/PeerCode.git
 cd PeerCode
-
-# 2. Install dependencies
 pip install -r backend/requirements.txt
-
-# 3. Launch
 python app.py
 ```
 
@@ -87,18 +92,10 @@ python app.py
 ### Windows
 
 ```bash
-# 1. Build the main application (uses PeerCode.spec — bundles web UI, backend & pywebview)
 pyinstaller PeerCode.spec --noconfirm --clean
 ```
 
-To create the end-user installer, build the bundled executable first, then compile the Inno Setup script:
-
-```bash
-# 2. Build the setup installer (requires Inno Setup)
-iscc installer/PeerCode.iss
-```
-
-The finished installer is written to `dist/installer/PeerCode-Setup.exe`.
+The finished portable executable is written to `dist/PeerCode.exe`.
 
 ### macOS & Linux
 

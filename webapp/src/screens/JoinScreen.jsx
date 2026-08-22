@@ -59,14 +59,15 @@ export default function JoinScreen({ onBack, onJoined }) {
     setBusy(true);
     setError("");
     try {
-      await api.validateGuest(ip.trim(), code.trim().toUpperCase());
+      const validated = await api.validateGuest(ip.trim(), code.trim().toUpperCase());
       if (joinedRef.current) return;
       joinedRef.current = true;
       setSuccess(true);
       if (!reduceMotion) {
         pulseControls.start({ scale: [1, 1.03, 1], transition: { duration: 0.35 } });
       }
-      await api.connectGuest(name.trim() || "Guest", ip.trim(), code.trim().toUpperCase());
+      const port = Number(validated?.port || 0);
+      await api.connectGuest(name.trim() || "Guest", ip.trim(), code.trim().toUpperCase(), port);
       onJoined({ role: "guest", name: name.trim() || "Guest", code: code.trim().toUpperCase(), ip: ip.trim() });
     } catch (e) {
       joinedRef.current = false;

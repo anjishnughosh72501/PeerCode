@@ -21,6 +21,7 @@ class Guest:
         self.websocket: WebSocketClientProtocol | None = None
         self.session_key: str = ""
         self.session_id: str = ""
+        self.approved: bool = False
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._connect_error: str | None = None
 
@@ -62,21 +63,42 @@ class Guest:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
 
     def disconnect(self) -> None:
-        if self._loop and self.websocket:
+        # Schedule the close on the guest loop without blocking the calling
+        # loop (which may be the aiohttp bridge loop) with .result().
+        if self._loop and self.websocket and self._loop.is_running():
+            websocket = self.websocket
+            loop = self._loop
+
+            def _close_then_stop() -> None:
+                async def _closer() -> None:
+                    try:
+                        await asyncio.wait_for(websocket.close(), timeout=1.5)
+                    except Exception:
+                        pass
+                    loop.stop()
+
+                loop.create_task(_closer())
+
             try:
-                asyncio.run_coroutine_threadsafe(self.websocket.close(), self._loop).result(timeout=5.0)
-            except Exception:
+                self._loop.call_soon_threadsafe(_close_then_stop)
+            except RuntimeError:
                 pass
-            self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread:
             self._thread.join(timeout=2.0)
 
     async def _send_request(self, msg_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Request/response round trip.
+
+        May be awaited from ANY event loop (e.g. the aiohttp bridge loop).
+        The reply future is created on the caller's loop and resolved from the
+        guest receive loop via call_soon_threadsafe; the websocket send is
+        always scheduled on the guest loop that owns the connection.
+        """
         if not self.websocket or not self._loop:
             raise RuntimeError("Guest is not connected to any session")
 
         req_id = str(uuid.uuid4())
-        fut = self._loop.create_future()
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
 
         def register() -> None:
             self._pending_requests[req_id] = fut
@@ -88,7 +110,12 @@ class Guest:
             payload["session_key"] = self.session_key
 
         msg = MSG(msg_type, payload, id=req_id)
-        await self.websocket.send(msg.to_json())
+        try:
+            send_fut = asyncio.run_coroutine_threadsafe(self.websocket.send(msg.to_json()), self._loop)
+            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(send_fut)), timeout=5.0)
+        except Exception as exc:
+            self._pending_requests.pop(req_id, None)
+            raise RuntimeError("Could not send the request to the host") from exc
 
         try:
             result = await asyncio.wait_for(fut, timeout=10.0)
@@ -149,10 +176,19 @@ class Guest:
 
     async def _connect_and_receive(self, host_ip: str, port: int, code: str) -> None:
         try:
-            self.websocket = await asyncio.wait_for(
-                websockets.connect(f"ws://{host_ip}:{port}"),
-                timeout=5.0,
-            )
+            websocket = None
+            for attempt in range(3):
+                try:
+                    websocket = await asyncio.wait_for(
+                        websockets.connect(f"ws://{host_ip}:{port}"),
+                        timeout=5.0,
+                    )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.8)
+            self.websocket = websocket
             await self.websocket.send(
                 MSG(MSG.HANDSHAKE, {"code": code, "name": self.name, "key": ""}).to_json()
             )
@@ -187,6 +223,7 @@ class Guest:
 
             self.session_key = str(init_msg.payload.get("session_key", ""))
             self.session_id = str(init_msg.payload.get("session_id", ""))
+            self.approved = True
             project_name = str(init_msg.payload.get("project_name", "Remote Project"))
 
             active = init_msg.payload.get("active_file")
@@ -218,7 +255,7 @@ class Guest:
                 if msg.id and msg.id in self._pending_requests:
                     fut = self._pending_requests.pop(msg.id)
                     if not fut.done():
-                        fut.set_result(msg.payload)
+                        fut.get_loop().call_soon_threadsafe(fut.set_result, msg.payload)
                     continue
 
                 if msg.type == MSG.FILE_UPDATE:
